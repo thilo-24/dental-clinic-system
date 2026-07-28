@@ -94,3 +94,15 @@ INSERT INTO doctors (doctor_name, specialization, is_active) VALUES
 ('Dr. Perera', 'Orthodontist', TRUE),
 ('Dr. Silva', 'Endodontist', TRUE)
 ON DUPLICATE KEY UPDATE doctor_name=VALUES(doctor_name);
+
+
+------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS appointment_addons (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id INT NOT NULL,
+    addon_name VARCHAR(150) NOT NULL,
+    addon_price DECIMAL(10,2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE CASCADE
+);

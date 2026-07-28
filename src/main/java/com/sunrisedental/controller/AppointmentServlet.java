@@ -6,14 +6,13 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.time.LocalDate;
-import java.time.LocalTime;
+import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 
 import com.sunrisedental.config.DatabaseConnection;
 import com.sunrisedental.factory.Treatment;
 import com.sunrisedental.factory.TreatmentFactory;
-import com.sunrisedental.util.AppointmentValidationUtil;
 
 import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.WebServlet;
@@ -24,6 +23,11 @@ import jakarta.servlet.http.HttpServletResponse;
 @WebServlet("/AppointmentServlet")
 public class AppointmentServlet extends HttpServlet {
     private static final long serialVersionUID = 1L;
+
+    // Strict list of the 5 daily valid time slots
+    private static final List<String> ALLOWED_SLOTS = Arrays.asList(
+        "09:00", "11:00", "14:00", "16:00", "18:00" ,"20:00"
+    );
 
     @Override
     protected void doPost(HttpServletRequest request, HttpServletResponse response)
@@ -57,25 +61,24 @@ public class AppointmentServlet extends HttpServlet {
             return;
         }
 
-        // 3. Time Parsing and 2-Hour Conflict Validation
-        String formattedTime = appTime.trim();
-        if (formattedTime.length() == 5) {
-            formattedTime += ":00";
+        // 3. Validate time slot matches one of the 5 allowed daily slots
+        String slotTime = appTime.trim();
+        if (slotTime.length() > 5) {
+            slotTime = slotTime.substring(0, 5); // Normalize HH:mm format
         }
 
-        LocalDate bookingDate = LocalDate.parse(appDate.trim());
-        LocalTime bookingTime = LocalTime.parse(formattedTime);
-
-        boolean isAvailable = AppointmentValidationUtil.isDoctorAvailable(dentistName.trim(), bookingDate, bookingTime);
-        if (!isAvailable) {
+        if (!ALLOWED_SLOTS.contains(slotTime)) {
             response.sendRedirect("receptionist/book-appointment.jsp?error=" + 
-                    URLEncoder.encode(dentistName + " is unavailable at " + appTime + ".Doctors require a 30-minute window between appointments.", "UTF-8"));
+                    URLEncoder.encode("Invalid slot selection. Please choose one of the 5 authorized daily slots.", "UTF-8"));
             return;
         }
+
+        String formattedTime = slotTime + ":00";
 
         Connection conn = null;
         PreparedStatement checkPatientPs = null;
         PreparedStatement checkDoctorPs = null;
+        PreparedStatement checkSlotPs = null;
         PreparedStatement ps = null;
         ResultSet rs = null;
 
@@ -94,7 +97,7 @@ public class AppointmentServlet extends HttpServlet {
             }
             rs.close();
 
-            // 5. Verify Doctor Admin Control (Is Active & Mapping Check)
+            // 5. Verify Doctor is active and authorized for this treatment
             String checkDoctorSql = "SELECT d.id FROM doctors d " +
                                     "JOIN doctor_treatments dt ON d.id = dt.doctor_id " +
                                     "JOIN treatments t ON dt.treatment_id = t.id " +
@@ -106,23 +109,39 @@ public class AppointmentServlet extends HttpServlet {
 
             if (!rs.next()) {
                 response.sendRedirect("receptionist/book-appointment.jsp?error=" + 
-                        URLEncoder.encode("Selected doctor is either inactive or not authorized by Admin for this treatment.", "UTF-8"));
+                        URLEncoder.encode("Selected doctor is either inactive or not authorized for this treatment.", "UTF-8"));
                 return;
             }
+            rs.close();
 
-            // 6. Resolve treatment details using Factory pattern
+            // 6. Check if the slot is already booked for this doctor on this date
+            String checkSlotSql = "SELECT id FROM appointments WHERE dentist_name = ? AND appointment_date = ? AND appointment_time LIKE ?";
+            checkSlotPs = conn.prepareStatement(checkSlotSql);
+            checkSlotPs.setString(1, dentistName.trim());
+            checkSlotPs.setString(2, appDate.trim());
+            checkSlotPs.setString(3, slotTime + "%");
+            rs = checkSlotPs.executeQuery();
+
+            if (rs.next()) {
+                response.sendRedirect("receptionist/book-appointment.jsp?error=" + 
+                        URLEncoder.encode("The " + slotTime + " slot for " + dentistName + " on " + appDate + " is already booked.", "UTF-8"));
+                return;
+            }
+            rs.close();
+
+            // 7. Resolve treatment details using Factory pattern
             Treatment treatment = TreatmentFactory.getTreatment(treatmentType.trim());
             if (treatment == null) {
-                throw new IllegalArgumentException("Unknown core identity structure mappings.");
+                throw new IllegalArgumentException("Unknown treatment factory mapping.");
             }
             
             double baseFee = treatment.getBasePrice();
             String verifiedName = treatment.getTreatmentName();
 
-            // 7. Generate appointment reference code
+            // 8. Generate appointment reference code
             String appointmentNumber = "APP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
 
-            // 8. Insert record into appointments table
+            // 9. Insert record into appointments table
             String sql = "INSERT INTO appointments (appointment_number, patient_id, dentist_name, " +
                          "treatment_type, appointment_date, appointment_time, consultation_fee, payment_status) " +
                          "VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')";
@@ -150,6 +169,7 @@ public class AppointmentServlet extends HttpServlet {
             if (rs != null) { try { rs.close(); } catch (SQLException e) { e.printStackTrace(); } }
             if (checkPatientPs != null) { try { checkPatientPs.close(); } catch (SQLException e) { e.printStackTrace(); } }
             if (checkDoctorPs != null) { try { checkDoctorPs.close(); } catch (SQLException e) { e.printStackTrace(); } }
+            if (checkSlotPs != null) { try { checkSlotPs.close(); } catch (SQLException e) { e.printStackTrace(); } }
             if (ps != null) { try { ps.close(); } catch (SQLException e) { e.printStackTrace(); } }
         }
     }
